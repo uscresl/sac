@@ -81,7 +81,7 @@ class SAC(RLAlgorithm, Serializable):
         print("SAC exploration policy:", initial_exploration_policy)
         #self._qf1 = qf1
         #self._qf2 = qf2
-        self._vf = vf
+        #self._vf = vf
         self._pool = pool
         self._plotter = plotter
 
@@ -203,8 +203,11 @@ class SAC(RLAlgorithm, Serializable):
                 self._observations_ph, self._actions_ph, reuse=True)  # N
 
         with tf.variable_scope('target'):
-            vf_next_target_t = self._vf.get_output_for(self._next_observations_ph)  # N
-            self._vf_target_params = self._vf.get_params_internal()
+            vf_target = batch2.MLP("vf_target", self._next_observations_ph, (64, 64), 1, tf.nn.relu)
+            self._vf_target_params = vf_target.vars
+            vf_next_target_t = vf_target.out
+            #vf_next_target_t = self._vf.get_output_for(self._next_observations_ph)  # N
+            #self._vf_target_params = self._vf.get_params_internal()
 
         ys = tf.stop_gradient(
             self.scale_reward * self._rewards_ph +
@@ -251,8 +254,11 @@ class SAC(RLAlgorithm, Serializable):
         actions, log_pi = self._policy.actions_for(observations=self._observations_ph,
                                                    with_log_pis=True)
 
-        self._vf_t = self._vf.get_output_for(self._observations_ph, reuse=True)  # N
-        self._vf_params = self._vf.get_params_internal()
+        self._vf = batch2.MLP("my_vf", self._observations_ph, (64, 64), 1, tf.nn.relu)
+        self._vf_t = self._vf.out
+        self._vf_params = self._vf.vars
+        #self._vf_t = self._vf.get_output_for(self._observations_ph, reuse=True)  # N
+        #self._vf_params = self._vf.get_params_internal()
 
         if self._action_prior == 'normal':
             D_s = actions.shape.as_list()[-1]
