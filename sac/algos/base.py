@@ -140,10 +140,10 @@ class RLAlgorithm(Algorithm):
         if self._eval_n_episodes < 1:
             return
 
-        with self._policy.deterministic(self._eval_deterministic):
-            paths = rollouts(self._eval_env, self._policy,
-                             self.sampler._max_path_length, self._eval_n_episodes,
-                            )
+        #with self._policy.deterministic(self._eval_deterministic):
+        paths = rollouts(self._eval_env, self._policy,
+                         self.sampler._max_path_length, self._eval_n_episodes,
+                        )
 
         total_returns = [path['rewards'].sum() for path in paths]
         episode_lengths = [len(p['rewards']) for p in paths]

@@ -8,10 +8,24 @@ from rllab.misc import logger
 from rllab.misc.overrides import overrides
 
 from .base import RLAlgorithm
+from sac.misc import tf_utils
 
 from . import batch2
 james = True
+james_policy = True
 
+# minimal shim to make policy wrapper of DiagGaussianPd
+class TempPolicy(object):
+    def __init__(self, sess, ob_in, ac_out):
+        self.sess = sess
+        self.ob_in = ob_in
+        self.ac_out = ac_out
+
+    def get_action(self, obs):
+        ac = self.sess.run(self.ac_out, feed_dict = {
+            self.ob_in : obs[None,:],
+        })
+        return ac[0], None
 
 class SAC(RLAlgorithm, Serializable):
 
@@ -77,7 +91,8 @@ class SAC(RLAlgorithm, Serializable):
         # all "in haarnoja" comments valid for half-cheetah only
 
         self._env = env
-        self._policy = policy
+        if not james_policy:
+            self._policy = policy
         # is gaussian in haarnoja
         self._initial_exploration_policy = initial_exploration_policy
         # is uniform in haarnoja
@@ -86,6 +101,7 @@ class SAC(RLAlgorithm, Serializable):
         #self._vf = vf
         self._pool = pool
         self._plotter = plotter
+
 
         self._policy_lr = lr
         self._qf_lr = lr
@@ -104,7 +120,8 @@ class SAC(RLAlgorithm, Serializable):
 
         # Reparameterize parameter must match between the algorithm and the
         # policy actions are sampled from.
-        assert reparameterize == self._policy._reparameterize
+        #assert reparameterize == self._policy._reparameterize
+        assert reparameterize == True
         self._reparameterize = reparameterize
         # == True in haarnoja
 
@@ -134,8 +151,14 @@ class SAC(RLAlgorithm, Serializable):
     @overrides
     def train(self):
         """Initiate training of the SAC instance."""
-
-        self._train(self._env, self._policy, self._initial_exploration_policy, self._pool)
+        if james_policy:
+            sess = tf_utils.get_default_session()
+            ob_in = self._observations_ph
+            ac_out = self._policy.ac
+            policy_wrapper = TempPolicy(sess, ob_in, ac_out)
+            self._train(self._env, policy_wrapper, self._initial_exploration_policy, self._pool)
+        else:
+            self._train(self._env, self._policy, self._initial_exploration_policy, self._pool)
 
     def _init_placeholders(self):
         """Create input placeholders for the SAC algorithm.
@@ -260,8 +283,18 @@ class SAC(RLAlgorithm, Serializable):
         of the value function and policy function update rules.
         """
 
-        actions, log_pi = self._policy.actions_for(observations=self._observations_ph,
-                                                   with_log_pis=True)
+        D_s = self._actions_ph.shape.as_list()[1]
+
+        if james_policy:
+            reg = tf.contrib.layers.l2_regularizer(1e-3)
+            self._policy = batch2.SquashedGaussianPolicy("sgpolicy",
+                self._observations_ph, (64, 64), D_s, tf.nn.relu, reg=reg)
+            actions = self._policy.ac
+            log_pi = self._policy.logp(self._policy.raw_ac)
+        else:
+            actions, log_pi = self._policy.actions_for(
+                observations=self._observations_ph, with_log_pis=True)
+
 
         self._vf = batch2.MLP("my_vf", self._observations_ph, (64, 64), 1, tf.nn.relu)
         self._vf_t = self._vf.out
@@ -269,8 +302,8 @@ class SAC(RLAlgorithm, Serializable):
         #self._vf_t = self._vf.get_output_for(self._observations_ph, reuse=True)  # N
         #self._vf_params = self._vf.get_params_internal()
 
+
         if self._action_prior == 'normal':
-            D_s = actions.shape.as_list()[-1]
             policy_prior = tf.contrib.distributions.MultivariateNormalDiag(
                 loc=tf.zeros(D_s), scale_diag=tf.ones(D_s))
             policy_prior_log_probs = policy_prior.log_prob(actions)
@@ -301,6 +334,8 @@ class SAC(RLAlgorithm, Serializable):
         policy_regularization_losses = tf.get_collection(
             tf.GraphKeys.REGULARIZATION_LOSSES,
             scope=self._policy.name)
+        if james_policy:
+            policy_regularization_losses += [self._policy.reg_loss]
         policy_regularization_loss = tf.reduce_sum(
             policy_regularization_losses)
 
@@ -396,7 +431,7 @@ class SAC(RLAlgorithm, Serializable):
         logger.record_tabular('mean-sq-bellman-error2', td_loss2)
         logger.record_tabular('pi_loss', np.mean(pi_loss))
 
-        self._policy.log_diagnostics(iteration, batch)
+        #self._policy.log_diagnostics(iteration, batch)
         if self._plotter:
             self._plotter.draw()
 

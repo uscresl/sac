@@ -183,12 +183,14 @@ class MLP(object):
                     reuse=reuse, name="fc_{}".format(i))
             self.out = tf.layers.dense(x, output_size,
                 kernel_initializer=tf.contrib.layers.xavier_initializer(),
-                kernel_regularizer=reg, use_bias=False,
+                kernel_regularizer=reg,
+                #use_bias=False,
                 name="fc_out", reuse=reuse)
             if output_size == 1:
                 self.out = self.out[:,0]
             # TODO: seems circular, can we get this without using strings?
             scope_name = tf.get_variable_scope().name
+            self.scope = scope_name
             self.vars = tf.get_collection(
                 tf.GraphKeys.GLOBAL_VARIABLES, scope=scope_name)
 
@@ -201,15 +203,27 @@ def lerp(a, b, theta):
 class SquashedGaussianPolicy(object):
     def __init__(self, name, input, hid_sizes, output_size, activation, reg=None, reuse=False):
 
+        self.name = name
         self.mlp = MLP(name, input, hid_sizes, 2*output_size, activation, reg, reuse)
-        mu, logstd = tf.split(self.mlp.out, 2, axis=1)
-        self.pdf = tf.Distributions.Normal(loc=mu, scale=tf.exp(logstd))
+        self.mu, logstd = tf.split(self.mlp.out, 2, axis=1)
+        self.logstd = tf.clip_by_value(logstd, -20.0, 2.0) # values taken from rllab
+        self.pdf = tf.distributions.Normal(loc=self.mu, scale=tf.exp(self.logstd))
         self.raw_ac = self.pdf.sample()
-        self.ac = tf.tanh(self.pdf.sample())
+        self.ac = tf.tanh(self.raw_ac)
 
-    # actions should be non-raw, e.g. with tanh already applied
-    def logp(self, actions):
+        self.reg_loss = 5e-4 * (
+            tf.reduce_mean(self.logstd ** 2) + tf.reduce_mean(self.mu ** 2))
+
+
+    # actions should be raw_ac, with tanh not applied
+    def logp(self, raw_actions):
+        log_p = -(0.5 * tf.to_float(raw_actions.shape[-1]) * np.log(2 * np.pi)
+            + tf.reduce_sum(self.logstd, axis=-1)
+            + 0.5 * tf.reduce_sum(((raw_actions - self.mu) / tf.exp(self.logstd)) ** 2, axis=-1)
+        )
         EPS = 1e-6
-        log_p = self.pdf.log_prob(action)
-        squash_correction = tf.reduce_sum(tf.log(1 - actions**2 + EPS), axis=1)
+        squash_correction = tf.reduce_sum(tf.log(1.0 - tf.tanh(raw_actions)**2 + EPS), axis=1)
         return log_p - squash_correction
+
+    def get_params_internal(self):
+        return self.mlp.vars

@@ -9,7 +9,7 @@ def rollout(env, policy, path_length, render=False, speedup=None):
     Do = env.observation_space.flat_dim
 
     observation = env.reset()
-    policy.reset()
+    #policy.reset()
 
     observations = np.zeros((path_length + 1, Do))
     actions = np.zeros((path_length, Da))
@@ -21,10 +21,11 @@ def rollout(env, policy, path_length, render=False, speedup=None):
     t = 0
     for t in range(path_length):
 
-        action, agent_info = policy.get_action(observation)
+        action, _ = policy.get_action(observation)
+        #print("action:", action)
         next_obs, reward, terminal, env_info = env.step(action)
 
-        agent_infos.append(agent_info)
+        #agent_infos.append(agent_info)
         env_infos.append(env_info)
 
         actions[t] = action
@@ -50,7 +51,7 @@ def rollout(env, policy, path_length, render=False, speedup=None):
         'rewards': rewards[:t + 1],
         'terminals': terminals[:t + 1],
         'next_observations': observations[1:t + 2],
-        'agent_infos': agent_infos,
+        #'agent_infos': agent_infos,
         'env_infos': env_infos
     }
 
@@ -131,7 +132,7 @@ class SimpleSampler(Sampler):
             next_observation=next_observation)
 
         if terminal or self._path_length >= self._max_path_length:
-            self.policy.reset()
+            #self.policy.reset()
             self._current_observation = self.env.reset()
             self._path_length = 0
             self._max_path_return = max(self._max_path_return,
