@@ -195,3 +195,21 @@ class MLP(object):
 # TODO is there a TF op for this?
 def lerp(a, b, theta):
     return (1.0 - theta) * a + theta * b
+
+
+
+class SquashedGaussianPolicy(object):
+    def __init__(self, name, input, hid_sizes, output_size, activation, reg=None, reuse=False):
+
+        self.mlp = MLP(name, input, hid_sizes, 2*output_size, activation, reg, reuse)
+        mu, logstd = tf.split(self.mlp.out, 2, axis=1)
+        self.pdf = tf.Distributions.Normal(loc=mu, scale=tf.exp(logstd))
+        self.raw_ac = self.pdf.sample()
+        self.ac = tf.tanh(self.pdf.sample())
+
+    # actions should be non-raw, e.g. with tanh already applied
+    def logp(self, actions):
+        EPS = 1e-6
+        log_p = self.pdf.log_prob(action)
+        squash_correction = tf.reduce_sum(tf.log(1 - actions**2 + EPS), axis=1)
+        return log_p - squash_correction
