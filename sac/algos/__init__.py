@@ -1,2 +1,2 @@
-from .sac import SAC
+from .sac import SAC, sac_learn
 from .diayn import DIAYN

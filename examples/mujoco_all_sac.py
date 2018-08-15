@@ -12,7 +12,7 @@ from rllab.envs.mujoco.humanoid_env import HumanoidEnv
 from rllab.misc.instrument import VariantGenerator
 from rllab import config
 
-from sac.algos import SAC
+from sac.algos import SAC, sac_learn
 from sac.envs import (
     GymEnv,
     MultiDirectionSwimmerEnv,
@@ -169,28 +169,38 @@ def run_experiment(variant):
     else:
         raise NotImplementedError(policy_params['type'])
 
-    algorithm = SAC(
-        base_kwargs=base_kwargs,
-        env=env,
-        policy=policy,
-        initial_exploration_policy=initial_exploration_policy,
-        pool=pool,
-        qf1=qf1,
-        qf2=qf2,
-        vf=vf,
-        lr=algorithm_params['lr'],
-        scale_reward=algorithm_params['scale_reward'],
-        discount=algorithm_params['discount'],
-        tau=algorithm_params['tau'],
-        reparameterize=algorithm_params['reparameterize'],
-        target_update_interval=algorithm_params['target_update_interval'],
-        action_prior=policy_params['action_prior'],
-        save_full_state=False,
-    )
+    if False:
+        algorithm = SAC(
+            base_kwargs=base_kwargs,
+            env=env,
+            policy=policy,
+            initial_exploration_policy=initial_exploration_policy,
+            pool=pool,
+            qf1=qf1,
+            qf2=qf2,
+            vf=vf,
+            lr=algorithm_params['lr'],
+            scale_reward=algorithm_params['scale_reward'],
+            discount=algorithm_params['discount'],
+            tau=algorithm_params['tau'],
+            reparameterize=algorithm_params['reparameterize'],
+            target_update_interval=algorithm_params['target_update_interval'],
+            action_prior=policy_params['action_prior'],
+            save_full_state=False,
+        )
 
-    algorithm._sess.run(tf.global_variables_initializer())
+        algorithm._sess.run(tf.global_variables_initializer())
 
-    algorithm.train()
+        algorithm.train()
+    else:
+        with tf.Session() as sess:
+            sac_learn(
+                sess, env,
+                epochs=100, minibatch=256, buf_size=int(1e6), init_explore_steps=10000,
+                lr=algorithm_params['lr'],
+                scale_reward=algorithm_params['scale_reward'],
+                discount=algorithm_params['discount'],
+                tau=algorithm_params['tau'])
 
 
 def launch_experiments(variant_generator, args):
