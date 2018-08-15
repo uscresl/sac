@@ -74,11 +74,13 @@ class SAC(RLAlgorithm, Serializable):
         Serializable.quick_init(self, locals())
         super(SAC, self).__init__(**base_kwargs)
 
+        # all "in haarnoja" comments valid for half-cheetah only
+
         self._env = env
         self._policy = policy
-        print("SAC policy:", policy)
+        # is gaussian in haarnoja
         self._initial_exploration_policy = initial_exploration_policy
-        print("SAC exploration policy:", initial_exploration_policy)
+        # is uniform in haarnoja
         #self._qf1 = qf1
         #self._qf2 = qf2
         #self._vf = vf
@@ -88,16 +90,23 @@ class SAC(RLAlgorithm, Serializable):
         self._policy_lr = lr
         self._qf_lr = lr
         self._vf_lr = lr
+        # all lr == 3e-4 in haarnoja
         self._scale_reward = scale_reward
+        # == 5 for half-cheetah in haarnoja
         self._discount = discount
+        # == .99 in haarnoja
         self._tau = tau
+        # == .005 in haarnoja
         self._target_update_interval = target_update_interval
+        # == 1 for half-cheetah in haarnoja
         self._action_prior = action_prior
+        # == 'uniform' in haarnoja
 
         # Reparameterize parameter must match between the algorithm and the
         # policy actions are sampled from.
         assert reparameterize == self._policy._reparameterize
         self._reparameterize = reparameterize
+        # == True in haarnoja
 
         self._save_full_state = save_full_state
 
