@@ -53,118 +53,87 @@ def sac_learn(
     epochs, minibatch, buf_size, init_explore_steps,
     lr, scale_reward, discount, tau):
 
-    print("inside sac_learn()!")
-    print("lr:", lr)
-
     dim_ac = env.action_space.flat_dim
     dim_ob = env.observation_space.flat_dim
 
     # placeholders
-    _observations_ph = tf.placeholder(tf.float32, (None, dim_ob), "ob")
-    _next_observations_ph = tf.placeholder(tf.float32, (None, dim_ob), "next_ob")
-    _actions_ph = tf.placeholder(tf.float32, (None, dim_ac), "ac")
-    _rewards_ph = tf.placeholder(tf.float32, (None, ), "rew")
+    obs_ph = tf.placeholder(tf.float32, (None, dim_ob), "ob")
+    nextob_ph = tf.placeholder(tf.float32, (None, dim_ob), "next_ob")
+    ac_ph = tf.placeholder(tf.float32, (None, dim_ac), "ac")
+    rew_ph = tf.placeholder(tf.float32, (None, ), "rew")
 
     # value function
-    _vf = batch2.MLP("my_vf", _observations_ph, (64, 64), 1, tf.nn.relu)
-    _vf_t = _vf.out
-    _vf_params = _vf.vars
+    vf = batch2.MLP("myvf", obs_ph, (64, 64), 1, tf.nn.relu)
 
     # policy
     reg = tf.contrib.layers.l2_regularizer(1e-3)
-    _policy = batch2.SquashedGaussianPolicy("sgpolicy",
-        _observations_ph, (64, 64), dim_ac, tf.nn.relu, reg=reg)
-    actions = _policy.ac
-    log_pi = _policy.logp(_policy.raw_ac)
+    policy = batch2.SquashedGaussianPolicy("sgpolicy",
+        obs_ph, (64, 64), dim_ac, tf.nn.relu, reg=reg)
+    log_pi = policy.logp(policy.raw_ac)
 
-    # double q functions
-    q_in = tf.concat([_observations_ph, actions], axis=1)
-    _qf1 = batch2.MLP("qf1", q_in, (64, 64), 1, tf.nn.relu)
-    _qf2 = batch2.MLP("qf2", q_in, (64, 64), 1, tf.nn.relu)
-    log_target1 = _qf1.out
-    min_log_target = tf.minimum(_qf1.out, _qf2.out)
+    # double q functions - these ones are used "on-policy" in the vf loss
+    q_in = tf.concat([obs_ph, policy.ac], axis=1)
+    qf1 = batch2.MLP("qf1", q_in, (64, 64), 1, tf.nn.relu)
+    qf2 = batch2.MLP("qf2", q_in, (64, 64), 1, tf.nn.relu)
+    qf_min = tf.minimum(qf1.out, qf2.out)
 
     # policy loss
-    policy_kl_loss = tf.reduce_mean(log_pi - log_target1)
+    policy_kl_loss = tf.reduce_mean(log_pi - qf1.out)
     pi_reg_losses = tf.get_collection(
-        tf.GraphKeys.REGULARIZATION_LOSSES, scope=_policy.name)
-    print("reg losses:", pi_reg_losses)
-    pi_reg_losses += [_policy.reg_loss]
+        tf.GraphKeys.REGULARIZATION_LOSSES, scope=policy.name)
+    pi_reg_losses += [policy.reg_loss]
     policy_loss = policy_kl_loss + tf.reduce_sum(pi_reg_losses)
 
     # value function loss
-    _vf_loss_t = 0.5 * tf.reduce_mean((
-      _vf_t
-      - tf.stop_gradient(min_log_target - log_pi)
-    )**2)
+    vf_loss = 0.5 * tf.reduce_mean((vf.out - tf.stop_gradient(qf_min - log_pi))**2)
 
-    qtrain_in = tf.concat([_observations_ph, _actions_ph], axis=1)
-    _qf1_t = batch2.MLP("qf1", qtrain_in, (64, 64), 1, tf.nn.relu, reuse=True)
-    _qf2_t = batch2.MLP("qf2", qtrain_in, (64, 64), 1, tf.nn.relu, reuse=True)
-    check_reuse(_qf1_t.vars, _qf1.vars)
-    check_reuse(_qf2_t.vars, _qf2.vars)
+    # same q functions, but for the off-policy TD training
+    qtrain_in = tf.concat([obs_ph, ac_ph], axis=1)
+    qf1_t = batch2.MLP("qf1", qtrain_in, (64, 64), 1, tf.nn.relu, reuse=True)
+    qf2_t = batch2.MLP("qf2", qtrain_in, (64, 64), 1, tf.nn.relu, reuse=True)
 
     # target (slow-moving) vf, used to update Q functions
     with tf.variable_scope('target'):
-        vf_target = batch2.MLP("vf_target", _next_observations_ph, (64, 64), 1, tf.nn.relu)
-        _vf_target_params = vf_target.vars
-        vf_next_target_t = vf_target.out
+        vf_TDtarget = batch2.MLP("vf_target", nextob_ph, (64, 64), 1, tf.nn.relu)
 
     # q fn TD-target & losses
-    ys = tf.stop_gradient(scale_reward * _rewards_ph + discount * vf_next_target_t)
-    _td_loss1_t = 0.5 * tf.reduce_mean((ys - _qf1_t.out)**2)
-    _td_loss2_t = 0.5 * tf.reduce_mean((ys - _qf2_t.out)**2)
+    ys = tf.stop_gradient(scale_reward * rew_ph + discount * vf_TDtarget.out)
+    TD_loss1 = 0.5 * tf.reduce_mean((ys - qf1_t.out)**2)
+    TD_loss2 = 0.5 * tf.reduce_mean((ys - qf2_t.out)**2)
 
 
     # training ops
-    policy_train_op = tf.train.AdamOptimizer(lr).minimize(
-        loss=policy_loss,
-        var_list=_policy.get_params_internal()
-    )
-    vf_train_op = tf.train.AdamOptimizer(lr).minimize(
-        loss=_vf_loss_t,
-        var_list=_vf_params
-    )
-    qf1_train_op = tf.train.AdamOptimizer(lr).minimize(
-        loss=_td_loss1_t,
-        var_list=_qf1.vars
-    )
-    qf2_train_op = tf.train.AdamOptimizer(lr).minimize(
-        loss=_td_loss2_t,
-        var_list=_qf2.vars
-    )
+    policy_opt_op = tf.train.AdamOptimizer(lr).minimize(
+        policy_loss, var_list=policy.get_params_internal())
 
-    _training_ops = [
-        policy_train_op,
-        vf_train_op,
-        qf1_train_op,
-        qf2_train_op,
-    ]
+    vf_opt_op = tf.train.AdamOptimizer(lr).minimize(
+        vf_loss, var_list=vf.vars)
+
+    qf1_opt_op = tf.train.AdamOptimizer(lr).minimize(
+        TD_loss1, var_list=qf1.vars)
+
+    qf2_opt_op = tf.train.AdamOptimizer(lr).minimize(
+        TD_loss2, var_list=qf2.vars)
+
+    train_ops = [policy_opt_op, vf_opt_op, qf1_opt_op, qf2_opt_op]
 
     # ops to update slow-moving target vf
-    source_params = _vf_params
-    target_params = _vf_target_params
-    _target_ops = [
+    vf_target_moving_avg_ops = [
         tf.assign(target, (1 - tau) * target + tau * source)
-        for target, source in zip(target_params, source_params)
+        for target, source in zip(vf_TDtarget.vars, vf.vars)
     ]
-
-    #buf_size = int(1e6)
-    #buf_dims = (dim_ob, dim_ac, 1, dim_ob)
-    #_buffer = batch2.ReplayBuffer(buf_size, buf_dims)
-
 
     # do it
     sess.run(tf.global_variables_initializer())
-    sess.run(_target_ops)
+    sess.run(vf_target_moving_avg_ops)
 
     # wrap policy for rllab interface
-    policy_wrapper = TempPolicy(sess, _observations_ph, _policy.ac)
-    policy_deterministic = TempPolicy(sess, _observations_ph, tf.tanh(_policy.mu))
+    policy_wrapper = TempPolicy(sess, obs_ph, policy.ac)
+    policy_deterministic = TempPolicy(sess, obs_ph, tf.tanh(policy.mu))
 
     initial_exploration_policy = UniformPolicy(env_spec=env.spec)
     initial_exploration_done = False
-    _n_train_repeat = 1
+    n_train_repeat = 1
 
     pool = SimpleReplayBuffer(env_spec=env.spec, max_replay_buffer_size=buf_size)
     SAMPLER_PARAMS = {
@@ -179,55 +148,34 @@ def sac_learn(
 
         logger.push_prefix('Epoch #%d | ' % epoch)
 
-        _epoch_length = 1000
-        for t in range(_epoch_length):
-            # TODO.codeconsolidation: Add control interval to sampler
+        epoch_length = 1000
+        for t in range(epoch_length):
             if not initial_exploration_done:
-                if _epoch_length * epoch >= init_explore_steps:
+                if epoch_length * epoch >= init_explore_steps:
                     sampler.set_policy(policy_wrapper)
                     initial_exploration_done = True
             sampler.sample()
             if not sampler.batch_ready():
                 continue
 
-            for i in range(_n_train_repeat):
-
+            for i in range(n_train_repeat):
                 batch = sampler.random_batch()
-
                 feed_dict = {
-                    _observations_ph: batch['observations'],
-                    _actions_ph: batch['actions'],
-                    _rewards_ph: batch['rewards'],
-                    _next_observations_ph: batch['next_observations'],
+                    obs_ph: batch['observations'],
+                    ac_ph: batch['actions'],
+                    rew_ph: batch['rewards'],
+                    nextob_ph: batch['next_observations'],
                 }
-
-                sess.run(_training_ops, feed_dict)
-                sess.run(_target_ops)
+                sess.run(train_ops, feed_dict)
+                sess.run(vf_target_moving_avg_ops)
 
         eval_n_episodes = 1
         render = True
         evaluate_policy(env, policy_deterministic, sampler,
             sampler._max_path_length, eval_n_episodes, render)
 
-
-        #iteration = epoch*_epoch_length
-        #batch = sampler.random_batch()
-        #log_diagnostics(iteration, batch)
-
-        #params = get_snapshot(epoch)
-        #logger.save_itr_params(epoch, params)
-        #times_itrs = gt.get_times().stamps.itrs
-
-        #eval_time = times_itrs['eval'][-1] if epoch > 1 else 0
-        #total_time = gt.get_times().total
-        #logger.record_tabular('time-train', times_itrs['train'][-1])
-        #logger.record_tabular('time-eval', eval_time)
-        #logger.record_tabular('time-sample', times_itrs['sample'][-1])
-        #logger.record_tabular('time-total', total_time)
         logger.record_tabular('epoch', epoch)
-
         sampler.log_diagnostics()
-
         logger.dump_tabular(with_prefix=False)
         logger.pop_prefix()
 
