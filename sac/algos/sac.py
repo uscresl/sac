@@ -9,66 +9,11 @@ from rllab.misc.overrides import overrides
 
 from .base import RLAlgorithm
 
+from . import batch2
+james = True
+
 
 class SAC(RLAlgorithm, Serializable):
-    """Soft Actor-Critic (SAC)
-
-    Example:
-    ```python
-
-    env = normalize(SwimmerEnv())
-
-    pool = SimpleReplayPool(env_spec=env.spec, max_pool_size=1E6)
-
-    base_kwargs = dict(
-        min_pool_size=1000,
-        epoch_length=1000,
-        n_epochs=1000,
-        batch_size=64,
-        scale_reward=1,
-        n_train_repeat=1,
-        eval_render=False,
-        eval_n_episodes=1,
-        eval_deterministic=True,
-    )
-
-    M = 100
-    qf = NNQFunction(env_spec=env.spec, hidden_layer_sizes=(M, M))
-
-    vf = NNVFunction(env_spec=env.spec, hidden_layer_sizes=(M, M))
-
-    policy = GMMPolicy(
-        env_spec=env.spec,
-        K=2,
-        hidden_layers=(M, M),
-        qf=qf,
-        reg=0.001
-    )
-
-    algorithm = SAC(
-        base_kwargs=base_kwargs,
-        env=env,
-        policy=policy,
-        pool=pool,
-        qf=qf,
-        vf=vf,
-
-        lr=3E-4,
-        discount=0.99,
-        tau=0.01,
-
-        save_full_state=False
-    )
-
-    algorithm.train()
-    ```
-
-    References
-    ----------
-    [1] Tuomas Haarnoja, Aurick Zhou, Pieter Abbeel, and Sergey Levine, "Soft
-        Actor-Critic: Off-Policy Maximum Entropy Deep Reinforcement Learning
-        with a Stochastic Actor," Deep Learning Symposium, NIPS 2017.
-    """
 
     def __init__(
             self,
@@ -131,9 +76,11 @@ class SAC(RLAlgorithm, Serializable):
 
         self._env = env
         self._policy = policy
+        print("SAC policy:", policy)
         self._initial_exploration_policy = initial_exploration_policy
-        self._qf1 = qf1
-        self._qf2 = qf2
+        print("SAC exploration policy:", initial_exploration_policy)
+        #self._qf1 = qf1
+        #self._qf2 = qf2
         self._vf = vf
         self._pool = pool
         self._plotter = plotter
@@ -244,10 +191,16 @@ class SAC(RLAlgorithm, Serializable):
         Q-function update rule.
         """
 
-        self._qf1_t = self._qf1.get_output_for(
-            self._observations_ph, self._actions_ph, reuse=True)  # N
-        self._qf2_t = self._qf2.get_output_for(
-            self._observations_ph, self._actions_ph, reuse=True)  # N
+        if james:
+            qtrain_in = tf.concat([self._observations_ph, self._actions_ph], axis=1)
+            self._qf1_t = batch2.MLP("qf1", qtrain_in, (64, 64), 1, tf.nn.relu, reuse=True)
+            self._qf2_t = batch2.MLP("qf2", qtrain_in, (64, 64), 1, tf.nn.relu, reuse=True)
+
+        else:
+            self._qf1_t = self._qf1.get_output_for(
+                self._observations_ph, self._actions_ph, reuse=True)  # N
+            self._qf2_t = self._qf2.get_output_for(
+                self._observations_ph, self._actions_ph, reuse=True)  # N
 
         with tf.variable_scope('target'):
             vf_next_target_t = self._vf.get_output_for(self._next_observations_ph)  # N
@@ -258,16 +211,22 @@ class SAC(RLAlgorithm, Serializable):
             (1 - self._terminals_ph) * self._discount * vf_next_target_t
         )  # N
 
-        self._td_loss1_t = 0.5 * tf.reduce_mean((ys - self._qf1_t)**2)
-        self._td_loss2_t = 0.5 * tf.reduce_mean((ys - self._qf2_t)**2)
+        if james:
+            self._td_loss1_t = 0.5 * tf.reduce_mean((ys - self._qf1_t.out)**2)
+            self._td_loss2_t = 0.5 * tf.reduce_mean((ys - self._qf2_t.out)**2)
+        else:
+            self._td_loss1_t = 0.5 * tf.reduce_mean((ys - self._qf1_t)**2)
+            self._td_loss2_t = 0.5 * tf.reduce_mean((ys - self._qf2_t)**2)
 
         qf1_train_op = tf.train.AdamOptimizer(self._qf_lr).minimize(
             loss=self._td_loss1_t,
-            var_list=self._qf1.get_params_internal()
+            #var_list=self._qf1.get_params_internal()
+            var_list=self._qf1.vars
         )
         qf2_train_op = tf.train.AdamOptimizer(self._qf_lr).minimize(
             loss=self._td_loss2_t,
-            var_list=self._qf2.get_params_internal()
+            #var_list=self._qf2.get_params_internal()
+            var_list=self._qf2.vars
         )
 
         self._training_ops.append(qf1_train_op)
@@ -303,11 +262,20 @@ class SAC(RLAlgorithm, Serializable):
         elif self._action_prior == 'uniform':
             policy_prior_log_probs = 0.0
 
-        log_target1 = self._qf1.get_output_for(
-            self._observations_ph, actions, reuse=True)  # N
-        log_target2 = self._qf2.get_output_for(
-            self._observations_ph, actions, reuse=True)  # N
-        min_log_target = tf.minimum(log_target1, log_target2)
+
+        if james:
+            assert not hasattr(self, "_qf1")
+            q_in = tf.concat([self._observations_ph, actions], axis=1)
+            self._qf1 = batch2.MLP("qf1", q_in, (64, 64), 1, tf.nn.relu)
+            self._qf2 = batch2.MLP("qf2", q_in, (64, 64), 1, tf.nn.relu)
+            log_target1 = self._qf1.out
+            min_log_target = tf.minimum(self._qf1.out, self._qf2.out)
+        else:
+            log_target1 = self._qf1.get_output_for(
+                self._observations_ph, actions, reuse=True)  # N
+            log_target2 = self._qf2.get_output_for(
+                self._observations_ph, actions, reuse=True)  # N
+            min_log_target = tf.minimum(log_target1, log_target2)
 
         if self._reparameterize:
             policy_kl_loss = tf.reduce_mean(log_pi - log_target1)
@@ -321,7 +289,7 @@ class SAC(RLAlgorithm, Serializable):
         policy_regularization_loss = tf.reduce_sum(
             policy_regularization_losses)
 
-        policy_loss = (policy_kl_loss
+        self.policy_loss = (policy_kl_loss
                        + policy_regularization_loss)
 
         # We update the vf towards the min of two Q-functions in order to
@@ -332,7 +300,7 @@ class SAC(RLAlgorithm, Serializable):
         )**2)
 
         policy_train_op = tf.train.AdamOptimizer(self._policy_lr).minimize(
-            loss=policy_loss,
+            loss=self.policy_loss,
             var_list=self._policy.get_params_internal()
         )
 
@@ -399,8 +367,8 @@ class SAC(RLAlgorithm, Serializable):
         """
 
         feed_dict = self._get_feed_dict(iteration, batch)
-        qf1, qf2, vf, td_loss1, td_loss2 = self._sess.run(
-            (self._qf1_t, self._qf2_t, self._vf_t, self._td_loss1_t, self._td_loss2_t), feed_dict)
+        qf1, qf2, vf, td_loss1, td_loss2, pi_loss = self._sess.run(
+            (self._qf1_t.out, self._qf2_t.out, self._vf_t, self._td_loss1_t, self._td_loss2_t, self.policy_loss), feed_dict)
 
         logger.record_tabular('qf1-avg', np.mean(qf1))
         logger.record_tabular('qf1-std', np.std(qf1))
@@ -411,6 +379,7 @@ class SAC(RLAlgorithm, Serializable):
         logger.record_tabular('vf-std', np.std(vf))
         logger.record_tabular('mean-sq-bellman-error1', td_loss1)
         logger.record_tabular('mean-sq-bellman-error2', td_loss2)
+        logger.record_tabular('pi_loss', np.mean(pi_loss))
 
         self._policy.log_diagnostics(iteration, batch)
         if self._plotter:
@@ -432,12 +401,12 @@ class SAC(RLAlgorithm, Serializable):
             }
         else:
             snapshot = {
-                'epoch': epoch,
-                'policy': self._policy,
-                'qf1': self._qf1,
-                'qf2': self._qf2,
-                'vf': self._vf,
-                'env': self._env,
+                #'epoch': epoch,
+                #'policy': self._policy,
+                #'qf1': self._qf1,
+                #'qf2': self._qf2,
+                #'vf': self._vf,
+                #'env': self._env,
             }
 
         return snapshot
