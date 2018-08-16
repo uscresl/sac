@@ -78,7 +78,7 @@ def sac_learn(
     qf_min = tf.minimum(qf1.out, qf2.out)
 
     # policy loss
-    policy_kl_loss = tf.reduce_mean(log_pi - qf1.out)
+    policy_kl_loss = tf.reduce_mean(log_pi - qf_min)
     pi_reg_losses = tf.get_collection(
         tf.GraphKeys.REGULARIZATION_LOSSES, scope=policy.name)
     pi_reg_losses += [policy.reg_loss]
